@@ -828,75 +828,74 @@ argument passed to `plz--sentinel', which see."
   ;; "Respond" also means "to react to something," which is what this
   ;; does--react to receiving the HTTP response--and it's an internal
   ;; name, so why not.
-  
+
   (plz-debug (float-time) process status (process-status process) (process-exit-status process) buffer)
   ;; According to emacs documentation the return of process-status can
   ;; either be the signal that interruped the process or the return code
   ;; of the process.
-
   ;; This depends on the value in the status. So ideally, we should first check
-  ;; the value in the status, if its not finished, it
+  ;; the value of status, if its finished, it indicates the process finished successfully.
+  ;; else it indicates it was interrupted or killed, or encountered some
+  ;; other strange condition.
   (unwind-protect
-      (cond
-       ((not (eq "finished\n" status))
-	(let* ((message (pcase status
-			  ("killed\n" "curl process killed")
-			  ("interrupt\n" "curl process interrupted")
-			  (_ (format "Unexpected curl process status:%S code:%S.  Please report this bug to the `plz' maintainer." status code))))
-	       (err (make-plz-error :message message)))
-	  (pcase-exhaustive (process-get process :plz-else)
-	    (`nil (process-put process :plz-result err))
-	    ((and (pred functionp) fn) (funcall fn err)))))
-       (t
+      (if (not (eq "finished\n" status))
+	  (let* ((message (pcase status
+			    ("killed\n" "curl process killed")
+			    ("interrupt\n" "curl process interrupted")
+			    (_ (format "Unexpected curl process status:%S code:%S.  Please report this bug to the `plz' maintainer." status code))))
+		 (err (make-plz-error :message message)))
+	    (pcase-exhaustive (process-get process :plz-else)
+	      (`nil (process-put process :plz-result err))
+	      ((and (pred functionp) fn) (funcall fn err))))
 	(pcase-exhaustive (process-exit-status process)
 	  (0
 	   ;; Curl exited normally: check HTTP status code.
 	   (with-current-buffer buffer
 	     ;; NOTE: We only switch to the process's buffer if curl
 	     ;; exited successfully.
-		     (goto-char (point-min))
-		     (plz--skip-proxy-headers)
-		     (while (plz--skip-redirect-headers))
-		     (pcase (plz--http-status)
-		       ((and status (guard (<= 200 status 299)))
-			;; Any 2xx response is considered successful.
-			(ignore status) ; Byte-compiling in Emacs <28 complains without this.
-			(funcall (process-get process :plz-then)))
-		       (_
-			;; TODO: If using ":as 'response", the HTTP response
-			;; should be passed to the THEN function, regardless
-			;; of the status code.  Only for curl errors should
-			;; the ELSE function be called.  (Maybe in v0.10.)
-			
-			;; Any other status code is considered unsuccessful
-			;; (for now, anyway).
-			(let ((err (make-plz-error :response (plz--response))))
-			  (pcase-exhaustive (process-get process :plz-else)
-			    (`nil (process-put process :plz-result err))
-			    ((and (pred functionp) fn) (funcall fn err))))))))
-		  ((and code (guard (<= 1 code 90)))
-		   ;; Curl exited non-zero.
-		   (let* ((curl-exit-code (cl-typecase code
-					    (string (string-to-number code))
-					    (number code)))
-			  (curl-error-message (alist-get curl-exit-code plz-curl-errors))
-			  (err (make-plz-error :curl-error (cons curl-exit-code curl-error-message))))
-		     (pcase-exhaustive (process-get process :plz-else)
-		       (`nil (process-put process :plz-result err))
-		       ((and (pred functionp) fn) (funcall fn err)))))
-		  (code
-		   ;; If we are here, something is really wrong.
-		   (let* ((message (format "Unexpected curl process status:%S code:%S.  Please report this bug to the `plz' maintainer." status code))
-			  (err (make-plz-error :message message)))
-		     (pcase-exhaustive (process-get process :plz-else)
-		       (`nil (process-put process :plz-result err))
-		       ((and (pred functionp) fn) (funcall fn err))))))))
+	     (goto-char (point-min))
+	     (plz--skip-proxy-headers)
+	     (while (plz--skip-redirect-headers))
+	     (pcase (plz--http-status)
+	       ((and status (guard (<= 200 status 299)))
+		;; Any 2xx response is considered successful.
+		(ignore status) ; Byte-compiling in Emacs <28 complains without this.
+		(funcall (process-get process :plz-then)))
+	       (_
+		;; TODO: If using ":as 'response", the HTTP response
+		;; should be passed to the THEN function, regardless
+		;; of the status code.  Only for curl errors should
+		;; the ELSE function be called.  (Maybe in v0.10.)
+
+		;; Any other status code is considered unsuccessful
+		;; (for now, anyway).
+		(let ((err (make-plz-error :response (plz--response))))
+		  (pcase-exhaustive (process-get process :plz-else)
+		    (`nil (process-put process :plz-result err))
+		    ((and (pred functionp) fn) (funcall fn err))))))))
+	  ((and code (guard (<= 1 code 90)))
+	   ;; Curl exited non-zero.
+	   (let* ((curl-exit-code (cl-typecase code
+				    (string (string-to-number code))
+				    (number code)))
+		  (curl-error-message (alist-get curl-exit-code plz-curl-errors))
+		  (err (make-plz-error :curl-error (cons curl-exit-code curl-error-message))))
+	     (pcase-exhaustive (process-get process :plz-else)
+	       (`nil (process-put process :plz-result err))
+	       ((and (pred functionp) fn) (funcall fn err)))))
+	  (code
+	   ;; If we are here, something is really wrong.
+	   (let* ((message (format "Unexpected curl process status:%S code:%S.  Please report this bug to the `plz' maintainer." status code))
+		  (err (make-plz-error :message message)))
+	     (pcase-exhaustive (process-get process :plz-else)
+	       (`nil (process-put process :plz-result err))
+	       ((and (pred functionp) fn) (funcall fn err)))))))
     (when-let ((finally (process-get process :plz-finally)))
       (funcall finally))
     (unless (or (process-get process :plz-sync)
                 (eq 'buffer (process-get process :plz-as)))
       (plz--kill-buffer buffer))))
-
+n
 (defun plz--stderr-sentinel (process status)
   "Sentinel for STDERR buffer.
 Arguments are PROCESS and STATUS (ok, checkdoc?)."
